@@ -501,6 +501,37 @@ def turnstile_exists(sb) -> bool:
         return False
 
 
+def close_modal(sb):
+    """关掉页面上可能打开的弹窗（如重置密码），避免它挡住验证框。"""
+    try:
+        sb.execute_script("""
+            (function(){
+                var sels = ['button[aria-label="Close"]', 'button[aria-label="close"]'];
+                for (var i = 0; i < sels.length; i++) {
+                    var b = document.querySelector(sels[i]);
+                    if (b) { try { b.click(); } catch(e) {} }
+                }
+                var btns = document.querySelectorAll('button');
+                for (var j = 0; j < btns.length; j++) {
+                    var t = (btns[j].textContent || '').trim();
+                    if (t === '×' || t === '✕') { try { btns[j].click(); } catch(e) {} }
+                }
+            })();
+        """)
+    except Exception:
+        pass
+    time.sleep(0.5)
+
+
+def wait_token(sb, seconds=15) -> bool:
+    for _ in range(int(seconds * 2)):
+        time.sleep(0.5)
+        if check_token(sb):
+            print("✅ Cloudflare Token通过")
+            return True
+    return False
+
+
 def solve_turnstile(sb) -> bool:
     for _ in range(3):
         sb.execute_script(EXPAND_POPUP_JS)
@@ -510,22 +541,31 @@ def solve_turnstile(sb) -> bool:
         print("✅ Token已存在")
         return True
 
-    coords = get_turnstile_coords(sb)
-    if not coords:
-        print("❌ 无法获取坐标")
-        return False
+    for attempt in range(2):
+        close_modal(sb)
+        # 方式一：SeleniumBase UC 原生点验证框（按元素自身位置点，比手算坐标准）
+        try:
+            print(f"🖱️ UC 原生点击验证框（第{attempt + 1}次）...")
+            sb.uc_gui_click_captcha()
+            if wait_token(sb, 15):
+                return True
+            print("⚠️ UC 点击后未出 Token，换坐标点击重试")
+        except Exception as e:
+            print(f"⚠️ UC 点击失败：{e}，换坐标点击重试")
 
-    win_x, win_y, toolbar = get_window_offset(sb)
-    abs_x = coords['click_x'] + win_x
-    abs_y = coords['click_y'] + win_y + toolbar
-    print(f"🖱️ 点击Token: ({abs_x}, {abs_y})")
-    xdotool_click(abs_x, abs_y)
-
-    for _ in range(30):
-        time.sleep(0.5)
-        if check_token(sb):
-            print("✅ Cloudflare Token通过")
-            return True
+        close_modal(sb)
+        # 方式二：原来的 xdotool 坐标点击（兜底）
+        coords = get_turnstile_coords(sb)
+        if coords:
+            win_x, win_y, toolbar = get_window_offset(sb)
+            abs_x = coords['click_x'] + win_x
+            abs_y = coords['click_y'] + win_y + toolbar
+            print(f"🖱️ 坐标点击Token: ({abs_x}, {abs_y})")
+            xdotool_click(abs_x, abs_y)
+            if wait_token(sb, 15):
+                return True
+        else:
+            print("❌ 无法获取坐标")
 
     print("❌ Cloudflare Token超时")
     sb.save_screenshot("turnstile_fail.png")
